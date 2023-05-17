@@ -159,7 +159,6 @@ export class ServiceBusPubSub extends PubSubEngine {
     if(!subscription.closed) {
       subscription.unsubscribe(); 
       this.subscriptions.delete(subId);
-      return true;
     }
     return true;
   }

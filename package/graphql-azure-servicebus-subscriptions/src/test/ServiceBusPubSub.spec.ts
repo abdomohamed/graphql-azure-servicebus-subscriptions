@@ -13,8 +13,6 @@ import {
   ServiceBusSender,
 } from "@azure/service-bus";
 import { FakeMessageSender, FakeMessageReceiver } from "./utils";
-import { lstat } from "fs";
-import { afterEach } from "mocha";
 
 chai.use(chaiAsPromised);
 chai.use(sinonChai);
@@ -196,6 +194,24 @@ describe("ServiceBusPubSub", () => {
     };
 
     ps.closeConnection();
+    expect(clientClosed).to.be.true;
+  });
+
+  it("sunscripe last client will close servicebus connection", async () => {
+    const mocked = getMockedServiceBusClient(fakeSender, fakeReceiver);
+    const ps = new ServiceBusPubSub(options, mocked.client);
+    var subIdOne = await ps.subscribe("a", (_: any) => {});
+    var subIdTwo = await ps.subscribe("a", (_: any) => {});
+
+    let clientClosed: boolean = false;
+
+    fakeReceiver.onClose = () => {
+      clientClosed = true;
+    };
+    await ps.unsubscribe(subIdOne);
+    expect(clientClosed).to.be.false;
+
+    await ps.unsubscribe(subIdTwo);
     expect(clientClosed).to.be.true;
   });
 });

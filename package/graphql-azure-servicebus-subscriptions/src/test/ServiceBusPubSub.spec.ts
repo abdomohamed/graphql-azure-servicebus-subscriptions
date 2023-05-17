@@ -4,7 +4,7 @@ import * as sinon from "sinon";
 import * as chai from "chai";
 import chaiAsPromised from "chai-as-promised";
 import sinonChai from "sinon-chai";
-import { IServiceBusOptions, ServiceBusPubSub } from "../ServiceBusPubSub";
+import { IEventBody, IServiceBusOptions, ServiceBusPubSub } from "../ServiceBusPubSub";
 import Simple, { spy, mock, Stub } from "simple-mock";
 import {
   ServiceBusClient,
@@ -24,16 +24,14 @@ const assert = chai.assert;
 const options: IServiceBusOptions = {
   topicName: "topic",
   subscriptionName: "subs-name",
-  filterEnabled: true,
-  connectionString: "",
-  messageLabelKeyName: "key",
+  connectionString: ""
 };
 
 const fakeReceiver = new FakeMessageReceiver();
 const fakeSender = new FakeMessageSender(fakeReceiver);
 const data: { message: any; eventName: string } = {
   eventName: "somethingChange",
-  message: "Hello",
+  message: {data: "Hello"},
 };
 
 function getMockedServiceBusClient(
@@ -79,7 +77,7 @@ describe("ServiceBusPubSub", () => {
     await ps.subscribe(data.eventName, async (payload: any) => {
       subscribeCalled = true;
       receivedMessage = payload;
-    });
+    }, {});
 
     await ps.publish(data.eventName, data.message);
     expect(fakeReceiver.pendingMessages.length).to.equal(1);
@@ -101,7 +99,7 @@ describe("ServiceBusPubSub", () => {
     await ps.subscribe("unknownEvent", async (payload: any) => {
       subscribeCalled = true;
       receivedMessage = payload;
-    });
+    }, {});
 
     await ps.publish(data.eventName, data.message);
     await fakeReceiver.flush();
@@ -116,13 +114,14 @@ describe("ServiceBusPubSub", () => {
       getMockedServiceBusClient(fakeSender, fakeReceiver).client
     );
 
-    await ps.subscribe(data.eventName, (payload: any) => {});
+    await ps.subscribe(data.eventName, (payload: any) => {}, {});
     await ps.publish(data.eventName, data.message);
     const values: Array<any> = [];
 
     for (const key in fakeReceiver.pendingMessages[0].applicationProperties) {
       values.push(fakeReceiver.pendingMessages[0].applicationProperties[key]);
     }
+
     expect(values).to.have.members([data.eventName]);
   });
 
@@ -131,8 +130,8 @@ describe("ServiceBusPubSub", () => {
 
     const ps = new ServiceBusPubSub(options, mocked.client);
 
-    await ps.subscribe(data.eventName, (payload: any) => {});
-    await ps.subscribe(data.eventName, (payload: any) => {});
+    await ps.subscribe(data.eventName, (payload: any) => {}, {});
+    await ps.subscribe(data.eventName, (payload: any) => {}, {});
 
     expect(mocked.receiverMock.callCount).to.eq(1);
   });
@@ -148,49 +147,9 @@ describe("ServiceBusPubSub", () => {
     expect(mocked.senderMock.callCount).to.eq(1);
   });
 
-  it("can subscribe to all messages if filterEnabled was false", async () => {
-    const mocked = getMockedServiceBusClient(fakeSender, fakeReceiver);
-    options.filterEnabled = false;
-    const ps = new ServiceBusPubSub(options, mocked.client);
-
-    let subscribeCalled = false;
-    let receivedMessage = undefined;
-
-    await ps.subscribe("a", (_: any) => {
-      subscribeCalled = true;
-      receivedMessage = _;
-    });
-
-    await ps.publish(data.eventName, data.message);
-
-    await fakeReceiver.flush();
-    expect(subscribeCalled).to.be.true;
-    expect(receivedMessage).to.equal(data.message);
-  });
-
-  it("will not override message label used for channeling received events to the right client", async () => {
-    const mocked = getMockedServiceBusClient(fakeSender, fakeReceiver);
-    options.filterEnabled = false;
-    options.messageLabelKeyName = "label";
-    const ps = new ServiceBusPubSub(options, mocked.client);
-    const message: ServiceBusMessage = {
-      body: "test message",
-      applicationProperties: {
-        [options.messageLabelKeyName]: "1233",
-      },
-    };
-
-    await ps.publish(data.eventName, message);
-    const publishedMessage = fakeSender.lastMessage();
-    expect(publishedMessage?.applicationProperties).to.equal(
-      message?.applicationProperties
-    );
-  });
-
   it("will enrich the published ServiceBusMessage with the label", async () => {
     const mocked = getMockedServiceBusClient(fakeSender, fakeReceiver);
-    options.filterEnabled = false;
-    options.messageLabelKeyName = "label";
+
     const ps = new ServiceBusPubSub(options, mocked.client);
     const message: ServiceBusMessage = {
       body: "test message",
@@ -200,29 +159,19 @@ describe("ServiceBusPubSub", () => {
     await ps.publish(data.eventName, message);
     const publishedMessage = fakeSender.lastMessage();
     expect(publishedMessage?.applicationProperties).to.deep.equal({
-      label: data.eventName,
+      "sub.eventName": data.eventName,
     });
   });
 
   it("can unsubscribe if passed the right client identifier", async () => {
     const mocked = getMockedServiceBusClient(fakeSender, fakeReceiver);
-    options.filterEnabled = false;
-    options.messageLabelKeyName = "label";
     const ps = new ServiceBusPubSub(options, mocked.client);
     const clientId = await ps.subscribe("a", (_: any) => {});
-    let clientClosed: boolean = false;
-
-    fakeReceiver.onClose = () => {
-      clientClosed = true;
-    };
-    await ps.unsubscribe(clientId);
-    expect(clientClosed).to.be.true;
+    expect(await ps.unsubscribe(clientId)).to.be.true;
   });
 
   it("will skip unsubscribe for unknown client identifiers", async () => {
     const mocked = getMockedServiceBusClient(fakeSender, fakeReceiver);
-    options.filterEnabled = false;
-    options.messageLabelKeyName = "label";
     const ps = new ServiceBusPubSub(options, mocked.client);
     await ps.subscribe("a", (_: any) => {});
     let clientClosed: boolean = false;
@@ -232,5 +181,21 @@ describe("ServiceBusPubSub", () => {
     };
     await ps.unsubscribe(55);
     expect(clientClosed).to.be.false;
+  });
+
+  it("will close connection", async () => {
+    const mocked = getMockedServiceBusClient(fakeSender, fakeReceiver);
+    
+    const ps = new ServiceBusPubSub(options, mocked.client);
+    await ps.subscribe("a", (_: any) => {});
+    let clientClosed: boolean = false;
+    
+
+    fakeReceiver.onClose = () => {
+      clientClosed = true;
+    };
+
+    ps.closeConnection();
+    expect(clientClosed).to.be.true;
   });
 });

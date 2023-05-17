@@ -9,7 +9,11 @@
         "lint": "cd package/graphql-azure-servicebus-subscriptions && npm run lint",
         "build:example": "cd examples && npm run build",
         "build:package": "cd package/graphql-azure-servicebus-subscriptions && npm run build",
-        "start:example": "cd examples && npm run start"
+        "start:example": "cd examples && npm run start",
+        "start:example_e": "cd examples && npm run starte"
     },
-    "version": "0.1.6"
+    "version": "0.1.6",
+    "dependencies": {
+        "yarn": "^1.22.19"
+    }
 }

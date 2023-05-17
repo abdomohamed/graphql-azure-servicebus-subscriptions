@@ -6,11 +6,12 @@ type Query {
 }
 
 type Subscription {
-  configChanged: ConfigUpdate
+  configChanged(userId: ID!): ConfigUpdate
 }
 
 type ConfigUpdate {
   Update: String
+  userId: ID
 }
 
 schema {

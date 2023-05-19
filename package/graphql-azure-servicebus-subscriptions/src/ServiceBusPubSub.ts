@@ -17,10 +17,7 @@ import debug from "debug";
 import { IEvent, IEventResult } from "./Event";
 import { IMessageProcessor, MessageProcessor } from "./MessageProcessor";
 
-
-export interface ILogger extends Console {
-  
-}
+export interface ILogger extends Console {}
 
 /**
  * Represents configuration needed to wire up PubSub engine with the ServiceBus topic
@@ -47,16 +44,24 @@ export class ServiceBusPubSub extends PubSubEngine {
   private subject: Subject<IEventResult>;
   private debugger = debug("graphql:servicebus");
   private eventNameKey: string = "sub.eventName";
-  private subscription: { close(): Promise<void>; } | undefined;
+  private subscription: { close(): Promise<void> } | undefined;
   private logger: ILogger;
   private messageProcessor: IMessageProcessor;
 
-  constructor(options: IServiceBusOptions, logger: ILogger, messageProcessor?: IMessageProcessor,  client?: ServiceBusClient) {
+  constructor(
+    options: IServiceBusOptions,
+    logger: ILogger,
+    messageProcessor?: IMessageProcessor,
+    client?: ServiceBusClient
+  ) {
     super();
     this.options = options;
     this.client = client || new ServiceBusClient(this.options.connectionString);
     this.sender = this.client.createSender(this.options.topicName);
-    this.reciever = this.client.createReceiver(this.options.topicName, this.options.subscriptionName);
+    this.reciever = this.client.createReceiver(
+      this.options.topicName,
+      this.options.subscriptionName
+    );
     this.logger = logger;
     this.messageProcessor = messageProcessor || new MessageProcessor(logger);
     this.subject = new Subject<IEventResult>();
@@ -68,11 +73,14 @@ export class ServiceBusPubSub extends PubSubEngine {
         await this.messageProcessor.process(this.subject, message);
       },
       processError: async (args: ProcessErrorArgs) => {
-        await this.messageProcessor.onError(args, async (error: ServiceBusError): Promise<void> => {
-          if(error.code === "UnauthorizedAccess") {
-            await this.subscription?.close();
+        await this.messageProcessor.onError(
+          args,
+          async (error: ServiceBusError): Promise<void> => {
+            if (error.code === "UnauthorizedAccess") {
+              await this.subscription?.close();
+            }
           }
-        });
+        );
       },
     });
   }

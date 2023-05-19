@@ -7,18 +7,18 @@
   "scripts": {
     "prestart": "npm run build",
     "start": "node dist/index.js",
-    "starte": "module & set DEBUG=express:* & node dist/index.js",
-    "startn": "set NODE_DEBUG=tls,module &  node dist/index.js",
+    "starte": "DEBUG=app node --inspect dist/index.js",
+    "startn": "module & export DEBUG=express:* & export NODE_DEBUG=tls,module,cluster,net,http &  node --inspect dist/index.js",
     "build": "tsc",
     "watch": "tsc -w",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "homepage": "https://github.com/abdomohamed/graphql-azure-servicebus-subscriptions/tree/main/package/graphql-azure-servicebus-subscriptions#readme",
   "repository": {
-		"type": "git",
-		"url": "https://github.com/abdomohamed/graphql-azure-servicebus-subscriptions",
-		"directory": "package/graphql-azure-servicebus-subscriptions"
-	},
+    "type": "git",
+    "url": "https://github.com/abdomohamed/graphql-azure-servicebus-subscriptions",
+    "directory": "package/graphql-azure-servicebus-subscriptions"
+  },
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -31,6 +31,7 @@
     "dotenv": "^16.0.0",
     "express": "^4.17.3",
     "graphql": "^16.3.0",
+    "graphql-subscriptions": "^2.0.0",
     "graphql-ws": "^5.7.0",
     "ws": "^8.5.0"
   },

@@ -1,38 +1,23 @@
-import { PubSubEngine } from 'graphql-subscriptions';
+import { PubSubEngine } from "graphql-subscriptions";
 
 import {
   ServiceBusClient,
+  ServiceBusMessage,
   ServiceBusReceivedMessage,
   ServiceBusSender,
+  ServiceBusReceiver,
   delay,
   isServiceBusError,
-} from '@azure/service-bus';
+  ProcessErrorArgs,
+  ServiceBusError,
+} from "@azure/service-bus";
 
-import { Subject, Subscription, filter, tap, map } from 'rxjs';
+import { Subject, Subscription, filter, tap, map } from "rxjs";
+import debug from "debug";
+import { IEvent, IEventResult } from "./Event";
+import { IMessageProcessor, MessageProcessor } from "./MessageProcessor";
 
-export interface IEventBody {
-  name: string
-  properties?: {
-      [key: string]: any;
-  };
-}
-
-export interface IEvent {
-  /**
-   * The message body that needs to be sent or is received.
-   */
-  body: IEventBody;
-  /**
-   * The application specific properties.
-   */
-  applicationProperties?: {
-    [key: string]: number | boolean | string | Date | null;
-  };
-}
-
-export interface IEventResult extends ServiceBusReceivedMessage, IEvent {
-  body: IEventBody;
-}
+export interface ILogger extends Console {}
 
 /**
  * Represents configuration needed to wire up PubSub engine with the ServiceBus topic
@@ -51,69 +36,71 @@ export interface IServiceBusOptions {
  */
 
 export class ServiceBusPubSub extends PubSubEngine {
-
   private client: ServiceBusClient;
   private sender: ServiceBusSender;
+  private reciever: ServiceBusReceiver;
   private subscriptions = new Map<number, Subscription>();
   private options: IServiceBusOptions;
   private subject: Subject<IEventResult>;
+  private debugger = debug("graphql:servicebus");
+  private eventNameKey: string = "sub.eventName";
+  private subscription: { close(): Promise<void> } | undefined;
+  private logger: ILogger;
+  private messageProcessor: IMessageProcessor;
 
-  constructor(options: IServiceBusOptions, client?: ServiceBusClient) {
+  constructor(
+    options: IServiceBusOptions,
+    logger: ILogger,
+    messageProcessor?: IMessageProcessor,
+    client?: ServiceBusClient
+  ) {
     super();
     this.options = options;
     this.client = client || new ServiceBusClient(this.options.connectionString);
-
     this.sender = this.client.createSender(this.options.topicName);
-    
+    this.reciever = this.client.createReceiver(
+      this.options.topicName,
+      this.options.subscriptionName
+    );
+    this.logger = logger;
+    this.messageProcessor = messageProcessor || new MessageProcessor(logger);
     this.subject = new Subject<IEventResult>();
-    const subscription = this.client
-      .createReceiver(this.options.topicName, this.options.subscriptionName)
-      .subscribe({
-        processMessage: async (message: ServiceBusReceivedMessage) => {
-          this.subject.next({
-            ...message,
-          });
-        },
-        processError: async (args) => {
-          console.log(
-            `Error from source ${args.errorSource} occurred: `,
-            args.error
-          );
+  }
 
-          if (isServiceBusError(args.error)) {
-            switch (args.error.code) {
-              case 'MessagingEntityDisabled':
-              case 'MessagingEntityNotFound':
-              case 'UnauthorizedAccess':
-                console.log(
-                  `An unrecoverable error occurred. Stopping processing. ${args.error.code}`,
-                  args.error
-                );
-                await subscription.close();
-                break;
-              case 'MessageLockLost':
-                console.log(`Message lock lost for message`, args.error);
-                break;
-              case 'ServiceBusy':
-                await delay(1000);
-                break;
+  createSubscription(): { close(): Promise<void> } {
+    return this.reciever.subscribe({
+      processMessage: async (message: ServiceBusReceivedMessage) => {
+        await this.messageProcessor.process(this.subject, message);
+      },
+      processError: async (args: ProcessErrorArgs) => {
+        await this.messageProcessor.onError(
+          args,
+          async (error: ServiceBusError): Promise<void> => {
+            if (error.code === "UnauthorizedAccess") {
+              await this.subscription?.close();
             }
           }
-        },
-      });
+        );
+      },
+    });
   }
-  
+
   async publish(eventName: string, payload: any): Promise<void> {
     try {
       let event: IEvent = {
         body: {
           name: eventName,
-          properties: payload
+          payload: payload,
         },
       };
-      this.sender.sendMessages([event]);
+
+      event = this.enrichMessage(
+        new Map<string, any>([[this.eventNameKey, eventName]]),
+        event
+      );
+      return this.sender.sendMessages(event);
     } catch (error) {
-      console.error(error);
+      this.logger.error(error);
     }
   }
 
@@ -124,8 +111,18 @@ export class ServiceBusPubSub extends PubSubEngine {
    * @property {onMessage | Function} - client handler for processing received events.
    * @returns {Promise<number>} - returns the created identifier for the created subscription. It would be used to dispose/close any resources while unsubscribing.
    */
-  async subscribe(eventName: string, onMessage: Function): Promise<number> {
+  async subscribe(
+    eventName: string,
+    onMessage: Function,
+    options: Object = {}
+  ): Promise<number> {
     const id = Date.now() * Math.random();
+    this.debugger("sub metadata: ", eventName, onMessage, options);
+
+    if (this.subscriptions.size <= 0) {
+      this.subscription = this.createSubscription();
+    }
+
     this.subscriptions.set(
       id,
       this.subject
@@ -134,12 +131,15 @@ export class ServiceBusPubSub extends PubSubEngine {
             (e) =>
               (eventName && e.body.name === eventName) ||
               !eventName ||
-              eventName === '*'
+              eventName === "*"
           ),
-          map((e) => e.body),
+          map((e) => e.body.payload),
           tap((e) => e)
         )
-        .subscribe((event) => onMessage(event))
+        .subscribe((event) => {
+          this.debugger("returned event: ", event);
+          onMessage(event);
+        })
     );
     return id;
   }
@@ -148,10 +148,37 @@ export class ServiceBusPubSub extends PubSubEngine {
    * Unsubscribe method would close open connection with the ServiceBus for a specific event handler.
    * @property {subId} - It's a unique identifier for each subscribed client.
    */
-  async unsubscribe(subId: number) {
+  async unsubscribe(subId: number): Promise<boolean> {
     const subscription = this.subscriptions.get(subId) || undefined;
-    if (subscription === undefined) return;
-    subscription.unsubscribe();
-    this.subscriptions.delete(subId);
+    if (!subscription) return false;
+
+    if (!subscription.closed) {
+      subscription.unsubscribe();
+      this.subscriptions.delete(subId);
+    }
+
+    if (this.subscriptions.size <= 0) await this.subscription?.close();
+    return true;
+  }
+
+  private enrichMessage(
+    attributes: Map<string, any>,
+    message: ServiceBusMessage
+  ): ServiceBusMessage {
+    const enrichedMessage = Object.assign({}, message);
+
+    if (enrichedMessage.applicationProperties == undefined)
+      enrichedMessage.applicationProperties = {};
+
+    attributes.forEach((value, key) => {
+      if (
+        enrichedMessage.applicationProperties !== undefined &&
+        enrichedMessage.applicationProperties?.[key] === undefined
+      ) {
+        enrichedMessage.applicationProperties[key] = value;
+      }
+    });
+
+    return enrichedMessage;
   }
 }

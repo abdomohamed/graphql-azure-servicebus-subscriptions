@@ -33,7 +33,7 @@
     "directory": "package/graphql-azure-servicebus-subscriptions"
   },
   "name": "@talema/graphql-azure-servicebus-subscriptions",
-  "version": "0.3.8",
+  "version": "0.5.0",
   "main": "./dist/esm/ServiceBusPubSub.js",
   "types": "./dist/esm/ServiceBusPubSub.d.ts",
   "exports": {

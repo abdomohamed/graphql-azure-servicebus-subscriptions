@@ -8,33 +8,18 @@ import {
   ServiceBusReceiver,
   delay,
   isServiceBusError,
+  ProcessErrorArgs,
+  ServiceBusError,
 } from "@azure/service-bus";
 
 import { Subject, Subscription, filter, tap, map } from "rxjs";
 import debug from "debug";
+import { IEvent, IEventResult } from "./Event";
+import { IMessageProcessor, MessageProcessor } from "./MessageProcessor";
 
-export interface IEventBody {
-  name: string;
-  payload?: {
-    [key: string]: any;
-  };
-}
 
-export interface IEvent {
-  /**
-   * The message body that needs to be sent or is received.
-   */
-  body: IEventBody;
-  /**
-   * The application specific properties.
-   */
-  applicationProperties?: {
-    [key: string]: number | boolean | string | Date | null;
-  };
-}
-
-export interface IEventResult extends ServiceBusReceivedMessage, IEvent {
-  body: IEventBody;
+export interface ILogger extends Console {
+  
 }
 
 /**
@@ -62,56 +47,32 @@ export class ServiceBusPubSub extends PubSubEngine {
   private subject: Subject<IEventResult>;
   private debugger = debug("graphql:servicebus");
   private eventNameKey: string = "sub.eventName";
-  private subscription: { close(): Promise<void> } = {
-    close: () => {
-      return Promise.resolve();
-    },
-  };
+  private subscription: { close(): Promise<void>; } | undefined;
+  private logger: ILogger;
+  private messageProcessor: IMessageProcessor;
 
-  constructor(options: IServiceBusOptions, client?: ServiceBusClient) {
+  constructor(options: IServiceBusOptions, logger: ILogger, messageProcessor?: IMessageProcessor,  client?: ServiceBusClient) {
     super();
     this.options = options;
     this.client = client || new ServiceBusClient(this.options.connectionString);
     this.sender = this.client.createSender(this.options.topicName);
-    this.reciever = this.client.createReceiver(
-      this.options.topicName,
-      this.options.subscriptionName
-    );
+    this.reciever = this.client.createReceiver(this.options.topicName, this.options.subscriptionName);
+    this.logger = logger;
+    this.messageProcessor = messageProcessor || new MessageProcessor(logger);
     this.subject = new Subject<IEventResult>();
   }
 
   createSubscription(): { close(): Promise<void> } {
     return this.reciever.subscribe({
       processMessage: async (message: ServiceBusReceivedMessage) => {
-        this.subject.next({
-          ...message,
-        });
+        await this.messageProcessor.process(this.subject, message);
       },
-      processError: async (args) => {
-        this.debugger(
-          `Error from source ${args.errorSource} occurred: `,
-          args.error
-        );
-
-        if (isServiceBusError(args.error)) {
-          switch (args.error.code) {
-            case "MessagingEntityDisabled":
-            case "MessagingEntityNotFound":
-            case "UnauthorizedAccess":
-              this.debugger(
-                `An unrecoverable error occurred. Stopping processing. ${args.error.code}`,
-                args.error
-              );
-              await this.subscription.close();
-              break;
-            case "MessageLockLost":
-              this.debugger(`Message lock lost for message`, args.error);
-              break;
-            case "ServiceBusy":
-              await delay(1000);
-              break;
+      processError: async (args: ProcessErrorArgs) => {
+        await this.messageProcessor.onError(args, async (error: ServiceBusError): Promise<void> => {
+          if(error.code === "UnauthorizedAccess") {
+            await this.subscription?.close();
           }
-        }
+        });
       },
     });
   }
@@ -131,7 +92,7 @@ export class ServiceBusPubSub extends PubSubEngine {
       );
       return this.sender.sendMessages(event);
     } catch (error) {
-      console.error(error);
+      this.logger.error(error);
     }
   }
 
@@ -188,12 +149,8 @@ export class ServiceBusPubSub extends PubSubEngine {
       this.subscriptions.delete(subId);
     }
 
-    if (this.subscriptions.size <= 0) this.closeConnection();
+    if (this.subscriptions.size <= 0) await this.subscription?.close();
     return true;
-  }
-
-  async closeConnection() {
-    return this.subscription.close();
   }
 
   private enrichMessage(
